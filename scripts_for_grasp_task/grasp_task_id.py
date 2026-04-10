@@ -47,13 +47,21 @@ else:
 
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
 #xml_path = os.path.join(current_dir, 'grasp_task_without_table.xml')
-xml_path = os.path.join(current_dir, 'grasp_task_id.xml')
+xml_path = os.path.join(parent_dir, 'grasp_task_id.xml')
 
 #加载模型
 model = mujoco.MjModel.from_xml_path(xml_path)
 data = mujoco.MjData(model)
+
+#为逆运动学计算克隆数据，防止计算时污染数据
+ik_data = mujoco.MjData(model)
+ik_rob = robot.Robot(model, ik_data)
+
+#主机器人，仅用于控制
 rob = robot.Robot(model, data)
+
 data.qpos[:9] = model.key_qpos[0,:9]
 #data.ctrl[:8] = model.key_ctrl[0, :8]
 data.qvel[:9] = 0
@@ -89,7 +97,7 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
     waypoints_jointspace = np.zeros((num_waypoints, ARM_DOF))
     q_start = rob.data.qpos[:ARM_DOF].copy()
 
-    ik_solver_position = ik.IKSolverPosition(rob)
+    ik_solver_position = ik.IKSolverPosition(ik_rob)
     current_q_for_ik_position = q_start.copy()
     target_orientation = np.diag((1.0, -1.0, -1.0))
     
@@ -97,9 +105,9 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
         if i == 0:
             res_q = np.array((0.,0.,0.,-1.57079, 0, 1.57079, -0.7853))
         elif i == 1:
-            res_q = ik_solver_position.calculate_joint_angles_only_transition(rob, current_q_for_ik_position, through_points[i,:])
+            res_q = ik_solver_position.calculate_joint_angles_only_transition(ik_rob, current_q_for_ik_position, through_points[i,:])
         else:
-            res_q = ik_solver_position.calculate_joint_angles(rob, current_q_for_ik_position, through_points[i,:], target_orientation, dt)
+            res_q = ik_solver_position.calculate_joint_angles(ik_rob, current_q_for_ik_position, through_points[i,:], target_orientation, dt)
         waypoints_jointspace[i,:] = res_q
         current_q_for_ik_position = res_q.copy()
 
@@ -172,10 +180,10 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
                 target_orientation = np.diag((1, -1, -1))
 
                 # 把当前的q喂给机器人以更新雅可比矩阵
-                rob.data.qpos[:7] = q_current
-                mujoco.mj_forward(rob.model, rob.data)
+                ik_rob.data.qpos[:7] = q_current
+                mujoco.mj_forward(model, ik_data)
 
-                dq_step = solver.solve_ik(rob, x_seg.T[i], target_orientation)
+                dq_step = solver.solve_ik(ik_rob, x_seg.T[i], target_orientation)
                 q_current += dq_step * dt
                 
                 q_seg.append(q_current.copy())
@@ -198,12 +206,6 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
     ###  逆运动学计算关节角度，关节角速度，角加速度，传递给动力学解算器解算
     ###  动力学用pd控制，kp乘q的位姿误差，kd乘q的速度误差，加上前馈的力矩：惯性力，科式力，重力
 
-    ### 纠正被轨迹计算污染的初始位姿
-    data.qpos[:ARM_DOF] = q_total[0]
-    data.qvel[:ARM_DOF] = 0
-    data.time = 0.0
-    mujoco.mj_forward(model, data)
-
     flag = 0
     while viewer.is_running():
         step_start = time.time()
@@ -211,7 +213,7 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
 
         current_step = int(data.time / dt)
 
-        print(f"夹爪真实出力7:{data.actuator_force[7]}")
+        #print(f"夹爪真实出力7:{data.actuator_force[7]}")
 
         if current_step < len(q_total):
             q_d = q_total[current_step]
