@@ -1,0 +1,8 @@
+__pycache__/
+D/
+planning/__pycache__/
+grasp_control.py
+grasp_task_without_table.xml
+position_validation.py
+test_torque.py
+to_be_delete(calculate_static_torque).py
