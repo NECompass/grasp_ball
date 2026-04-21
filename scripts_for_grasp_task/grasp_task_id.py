@@ -4,6 +4,7 @@ import numpy as np
 import time
 import os
 from enum import Enum
+from scipy.interpolate import interp1d
 
 import ik
 import id
@@ -25,7 +26,7 @@ if scenario == SCENARIO.integration:
     time_integration = TIME_INTEGRATION.rk45
     pd_controller = False
     # p and d gain
-    #kp = 1000 * np.eye(ARM_DOF)
+    # kp = 1000 * np.eye(ARM_DOF)
     kp = np.diag([2000, 2000, 2000, 2000, 500, 500, 200])
     #kd = 0.1 * np.eye(ARM_DOF)
     kd = np.diag([80, 80, 80, 60, 20, 15, 5])
@@ -62,7 +63,7 @@ ik_rob = robot.Robot(model, ik_data)
 #主机器人，仅用于控制
 rob = robot.Robot(model, data)
 
-data.qpos[:9] = model.key_qpos[0,:9]
+data.qpos[:9] = model.key_qpos[0,:9]  # 把初始位置设定在home位置而非仿真器默认的垂直奇异位置
 #data.ctrl[:8] = model.key_ctrl[0, :8]
 data.qvel[:9] = 0
 mujoco.mj_forward(model, data)
@@ -205,6 +206,11 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
     ###  如果某些运动片段对于工作空间里的位移过程没有要求，只对起始点位置要求，轨迹规划可以针对于关节空间，方便关节活动，此时输入的关节空间坐标由IKSolverPosition类中的calculate_joint_angles计算
     ###  逆运动学计算关节角度，关节角速度，角加速度，传递给动力学解算器解算
     ###  动力学用pd控制，kp乘q的位姿误差，kd乘q的速度误差，加上前馈的力矩：惯性力，科式力，重力
+    joint_data_500Hz = []
+
+    # 记录零时刻初始状态，使最终结果从0s开始而非0.002s
+    initial_record = np.concatenate(([data.time], data.qpos[:ARM_DOF].copy()))
+    joint_data_500Hz.append(initial_record)
 
     flag = 0
     while viewer.is_running():
@@ -249,6 +255,27 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
             data.ctrl[:7] = tau_antrib
 
         mujoco.mj_step(model, data)
+
+        # 输出关节角数据
+        current_record = np.concatenate(([data.time], data.qpos[:ARM_DOF].copy()))
+        joint_data_500Hz.append(current_record)
+
         viewer.sync()
 
         time.sleep(max(0, model.opt.timestep - (time.time() - step_start)))
+
+    joint_data_500Hz = np.array(joint_data_500Hz) # 将列表转换为Numpy数组（N，8）
+    input_data_dir = os.path.join(parent_dir, "input_data")
+    os.makedirs(input_data_dir, exist_ok = True) #确保路径文件夹存在，否则新建
+    save_path_500hz = os.path.join(input_data_dir, "trajectory_500Hz.csv")
+    header = "time, q1, q2, q3, q4, q5, q6, q7"
+    np.savetxt(save_path_500hz, joint_data_500Hz, delimiter=",", header = header, comments = '', fmt = '%.6f')
+
+    time_old = joint_data_500Hz[:,0]
+    q_old = joint_data_500Hz[:, 1:]
+    time_new = np.arange(time_old[0], time_old[-1], 0.001)
+    f_interp = interp1d(time_old, q_old, axis=0, kind='linear', fill_value="extrapolate")
+    q_new = f_interp(time_new)
+    joint_data_1000Hz = np.column_stack((time_new, q_new))
+    save_path_1000hz = os.path.join(input_data_dir, "trajectory_1000Hz.csv")
+    np.savetxt(save_path_1000hz, joint_data_1000Hz, delimiter=",", header=header, comments='', fmt='%.6f')
